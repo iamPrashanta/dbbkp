@@ -588,7 +588,7 @@ file_download() {
 # Self-Update Handler
 self_update() {
     print_info "--- Self-Update Agent ---"
-    local remote_url="https://raw.githubusercontent.com/iamPrashanta/dbbkp-agent/main/dbbkp.sh"
+    local remote_url="https://raw.githubusercontent.com/iamPrashanta/dbbkp/main/dbbkp.sh"
     local script_path=$(command -v dbbkp || echo "$0")
     
     echo "This will securely fetch the latest version of dbbkp from GitHub."
