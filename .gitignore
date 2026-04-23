@@ -1,0 +1,14 @@
+# Compiled Debian packages
+*.deb
+
+# Environment Configuration / Credentials
+.env
+
+# Local script execution logs
+*.log
+
+# Local temporary database archives
+*.sql
+*.sql.gz
+*.backup
+*.sha256
