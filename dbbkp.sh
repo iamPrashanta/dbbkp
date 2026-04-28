@@ -1,11 +1,20 @@
 #!/bin/bash
 
-# ==============================================================================
-# dbbkp.sh - DB Backup & Restore Manager
-# ==============================================================================
+set -euo pipefail
 
-set -o pipefail
+VERSION="1.0.0"
+JSON_MODE=0
 
+# LOCK
+LOCK_FILE="/tmp/dbbkp.lock"
+
+exec 200>"$LOCK_FILE"
+flock -n 200 || {
+    echo "[!] Another dbbkp process is already running."
+    exit 1
+}
+
+# ENV
 HEADLESS=0
 
 # Check and Load .env silently
@@ -15,27 +24,87 @@ if [ -f ".env" ]; then
     set +a
 fi
 
+# LOGGING
 LOG_FILE="${ENV_LOG_FILE:-./dbbkp-run.log}"
 
 # Helper to print and log colored status messages
 log_to_file() {
-    # Remove ansi escape codes for the log file safely
-    local plain_msg=$(echo "$1" | sed -E 's/\x1B\[[0-9;]*[mGK]//g')
-    local d=$(date '+%Y-%m-%d %H:%M:%S')
-    echo "[$d] $plain_msg" >> "$LOG_FILE"
+    local plain_msg
+    plain_msg=$(echo "$1" | sed -E 's/\x1B\[[0-9;]*[mGK]//g')
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $plain_msg" >> "$LOG_FILE"
 }
 
-print_msg() { 
+print_msg() {
+    if [ "$JSON_MODE" -eq 1 ]; then
+        echo "{\"status\":\"success\",\"message\":\"$1\"}"
+        return
+    fi
     echo -e "\e[32m[+]\e[0m $1"
     log_to_file "[SUCCESS] $1"
 }
-print_err() { 
+
+print_err() {
+    if [ "$JSON_MODE" -eq 1 ]; then
+        echo "{\"status\":\"error\",\"message\":\"$1\"}"
+        return
+    fi
     echo -e "\e[31m[!]\e[0m $1"
     log_to_file "[ERROR] $1"
 }
-print_info() { 
+
+print_info() {
+    if [ "$JSON_MODE" -eq 1 ]; then
+        echo "{\"status\":\"info\",\"message\":\"$1\"}"
+        return
+    fi
     echo -e "\e[34m[i]\e[0m $1"
     log_to_file "[INFO] $1"
+}
+
+print_warn() {
+    if [ "$JSON_MODE" -eq 1 ]; then
+        echo "{\"status\":\"warn\",\"message\":\"$1\"}"
+        return
+    fi
+    echo -e "\e[33m[!]\e[0m $1"
+    log_to_file "[WARN] $1"
+}
+
+print_step() {
+    if [ "$JSON_MODE" -eq 1 ]; then
+        echo "{\"status\":\"step\",\"message\":\"$1\"}"
+        return
+    fi
+    echo -e "\e[36m[→]\e[0m $1"
+    log_to_file "[STEP] $1"
+}
+
+
+# PASSWORD GENERATOR
+generate_password() {
+    if command -v openssl >/dev/null 2>&1; then
+        openssl rand -base64 32 | tr -d "=+/" | cut -c1-32
+    else
+        tr -dc 'A-Za-z0-9' < /dev/urandom | head -c 32
+    fi
+}
+
+# DEP CHECK
+check_dependencies() {
+    for cmd in curl gzip; do
+        if ! command -v "$cmd" >/dev/null 2>&1; then
+            print_warn "$cmd not found (some features may fail)"
+        fi
+    done
+}
+
+check_dependencies
+
+json_output() {
+    if [ "$JSON_MODE" -eq 1 ]; then
+        echo "{\"status\":\"$1\",\"message\":\"$2\"}"
+        exit 0
+    fi
 }
 
 # Retry mechanism helper
@@ -49,8 +118,11 @@ with_retry() {
     while (( attempt <= max_attempts ))
     do
         # Execute the passed string as a command
-        eval "$command_func"
-        exitCode=$?
+        if eval "$command_func"; then
+            return 0
+        else
+            exitCode=$?
+        fi
 
         if [[ $exitCode == 0 ]]; then
             break
@@ -106,7 +178,7 @@ send_notification() {
     
     if [ "$HEADLESS" -eq 1 ]; then
         if [ -n "$url" ]; then
-            curl -s -H "Content-Type: application/json" -d "{\"text\":\"$message\",\"content\":\"$message\"}" "$url" >/dev/null
+            curl -fsSL -H "Content-Type: application/json" -d "{\"text\":\"$message\",\"content\":\"$message\"}" "$url" >/dev/null
             log_to_file "[WEBHOOK] Sent: $message"
         fi
         return
@@ -126,7 +198,7 @@ send_notification() {
     
     if [ -n "$url" ]; then
         print_info "Sending notification..."
-        curl -s -H "Content-Type: application/json" -d "{\"text\":\"$message\",\"content\":\"$message\"}" "$url" >/dev/null
+        curl -fsSL -H "Content-Type: application/json" -d "{\"text\":\"$message\",\"content\":\"$message\"}" "$url" >/dev/null
         print_msg "Notification ping sent."
         log_to_file "[WEBHOOK] Sent: $message"
     fi
@@ -180,18 +252,32 @@ prompt_db_details() {
 }
 
 prompt_filename() {
-    local default_name=$1
-    local var_to_set=$2
+    local default_name="$1"
+    local var_to_set="$2"
+
     if [ "$HEADLESS" -eq 1 ]; then
-        eval $var_to_set="'$default_name'"
+        printf -v "$var_to_set" "%s" "$default_name"
         return
     fi
-    local choice
+
+    local choice user_filename
+
     echo "Do you want to use auto-generated filename ($default_name) or manual input?"
+
     select choice in "Auto-generate" "Manual input"; do
         case $choice in
-            "Auto-generate" ) eval $var_to_set="'$default_name'"; break;;
-            "Manual input" ) read -e -p "Enter filename: " user_filename; eval $var_to_set="'$user_filename'"; break;;
+            "Auto-generate")
+                printf -v "$var_to_set" "%s" "$default_name"
+                break
+                ;;
+            "Manual input")
+                read -e -p "Enter filename: " user_filename
+                printf -v "$var_to_set" "%s" "$user_filename"
+                break
+                ;;
+            *)
+                echo "Invalid option"
+                ;;
         esac
     done
 }
@@ -257,45 +343,33 @@ do_pgsql_schema_dump() {
     return $exitCode
 }
 
-do_transfer_file() {
-    local target_file="$1"
-    case "$t_method" in
-        "scp" ) scp -P "$SSH_PORT" -C "$target_file" "$T_DEST" ;;
-        "rsync" ) rsync -avz -e "ssh -p $SSH_PORT" --progress "$target_file" "$T_DEST" ;;
-        "AWS S3" ) aws s3 cp "$target_file" "$T_DEST" ;;
-        "rclone (GDrive/Other)" ) rclone copy "$target_file" "$T_DEST" ;;
-    esac
-}
-
-do_download_file() {
-    local source_path="$1"
-    case "$t_method" in
-        "scp" ) scp -P "$SSH_PORT" -C "$source_path" "$T_DEST" ;;
-        "rsync" ) rsync -avz -e "ssh -p $SSH_PORT" --progress "$source_path" "$T_DEST" ;;
-        "AWS S3" ) aws s3 cp "$source_path" "$T_DEST" ;;
-        "rclone (GDrive/Other)" ) rclone copy "$source_path" "$T_DEST" ;;
-    esac
-}
-
-# --- CORE HANDLERS ---
+# CORE HANDLERS
 
 mysql_backup() {
     print_info "--- MySQL Backup ---"
     prompt_db_details
+
     DATE=$(date +%F_%H-%M)
     RANDOM_ID=$(shuf -i 1000-9999 -n 1 2>/dev/null || echo $RANDOM)
     DEFAULT_FILE="backup_${DB_NAME}_${DATE}_${RANDOM_ID}.sql.gz"
+
     local OUT_FILE=""
     prompt_filename "$DEFAULT_FILE" "OUT_FILE"
 
     export MYSQL_PWD="$DB_PASS"
-    print_info "Starting MySQL dump with retry..."
-    with_retry "do_mysql_dump"
-    if [ $? -eq 0 ]; then
+
+    print_step "Starting MySQL dump..."
+
+    if with_retry "do_mysql_dump"; then
         print_msg "Backup saved to: $OUT_FILE"
         generate_checksum "$OUT_FILE"
         send_notification "✅ MySQL Backup for ${DB_NAME} completed successfully!"
+    else
+        print_err "Backup failed"
+        export MYSQL_PWD=""
+        return 1
     fi
+
     export MYSQL_PWD=""
 }
 
@@ -343,17 +417,23 @@ pgsql_backup() {
     
     export PGPASSWORD="$DB_PASS"
     print_info "Taking Data backup (INSERT mode)..."
-    with_retry "do_pgsql_data_dump"
-    if [ $? -eq 0 ]; then
+    if with_retry "do_pgsql_data_dump"; then
         print_msg "Data backup saved: $DATA_FILE"
         generate_checksum "$DATA_FILE"
+    else
+        print_err "Data backup failed"
+        unset PGPASSWORD
+        return 1
     fi
     
     print_info "Taking Schema backup (CUSTOM format)..."
-    with_retry "do_pgsql_schema_dump"
-    if [ $? -eq 0 ]; then
+    if with_retry "do_pgsql_schema_dump"; then
         print_msg "Schema backup saved: $SCHEMA_FILE"
         generate_checksum "$SCHEMA_FILE"
+    else
+        print_err "Schema backup failed"
+        unset PGPASSWORD
+        return 1
     fi
     
     unset PGPASSWORD
@@ -482,6 +562,27 @@ END $$;
 EOF
 }
 
+
+do_transfer_file() {
+    local target_file="$1"
+    case "$t_method" in
+        "scp" ) scp -P "$SSH_PORT" -C "$target_file" "$T_DEST" ;;
+        "rsync" ) rsync -avz -e "ssh -p $SSH_PORT" --progress "$target_file" "$T_DEST" ;;
+        "AWS S3" ) aws s3 cp "$target_file" "$T_DEST" ;;
+        "rclone (GDrive/Other)" ) rclone copy "$target_file" "$T_DEST" ;;
+    esac
+}
+
+do_download_file() {
+    local source_path="$1"
+    case "$t_method" in
+        "scp" ) scp -P "$SSH_PORT" -C "$source_path" "$T_DEST" ;;
+        "rsync" ) rsync -avz -e "ssh -p $SSH_PORT" --progress "$source_path" "$T_DEST" ;;
+        "AWS S3" ) aws s3 cp "$source_path" "$T_DEST" ;;
+        "rclone (GDrive/Other)" ) rclone copy "$source_path" "$T_DEST" ;;
+    esac
+}
+
 # Upload Handler
 file_transfer() {
     print_info "--- Upload File (Cloud & Server) ---"
@@ -526,7 +627,12 @@ file_transfer() {
     fi
 
     print_info "Initiating transfer for primary file..."
-    with_retry "do_transfer_file '$T_FILE'"
+    if with_retry "do_transfer_file '$T_FILE'"; then
+        print_msg "Transfer completed"
+    else
+        print_err "Transfer failed"
+        return 1
+    fi
     
     # Check if a checksum file was created, and upload it as a sidecar
     if [ -f "${T_FILE}.sha256" ]; then
@@ -590,11 +696,17 @@ file_download() {
     fi
 
     print_info "Initiating download for requested object..."
-    with_retry "do_download_file '$T_SRC'"
+    if with_retry "do_download_file '$T_FILE'"; then
+        print_msg "Download completed"
+    else
+        print_err "Download failed"
+        return 1
+    fi
     
     print_msg "Download protocol fully completed."
     send_notification "✅ File Download from ${T_SRC} completed!"
 }
+
 
 # Self-Update Handler
 self_update() {
@@ -609,19 +721,31 @@ self_update() {
     fi
     
     print_info "Downloading latest release from GitHub (raw)..."
-    if [ -w "$script_path" ]; then
-        curl -sL "$remote_url" -o "$script_path"
-        chmod +x "$script_path"
-        print_msg "Agent upgraded seamlessly! Please run 'dbbkp' again to load the new version."
-        exit 0
-    else
-        print_info "Elevated permissions required. You may be probed for your local password..."
-        sudo curl -sL "$remote_url" -o "$script_path"
-        sudo chmod +x "$script_path"
-        print_msg "Agent upgraded gracefully! Please run 'dbbkp' again to load the new version."
-        exit 0
+    tmp_file=$(mktemp)
+
+    if ! curl -fsSL "$remote_url" -o "$tmp_file"; then
+        print_err "Download failed"
+        return 1
     fi
+
+    if ! grep -q "^#!/bin/bash" "$tmp_file"; then
+        print_err "Downloaded file is invalid"
+        rm -f "$tmp_file"
+        return 1
+    fi
+
+    chmod +x "$tmp_file"
+
+    if [ -w "$script_path" ]; then
+        mv "$tmp_file" "$script_path"
+    else
+        sudo mv "$tmp_file" "$script_path"
+    fi
+
+    print_msg "Updated successfully"
+    return 0
 }
+
 
 # Headless Argument Parsing Loop
 while [[ "$#" -gt 0 ]]; do
@@ -634,6 +758,8 @@ while [[ "$#" -gt 0 ]]; do
         --method=*) HEADLESS_METHOD="${1#*=}" ;;
         --port=*) HEADLESS_PORT="${1#*=}" ;;
         --update) self_update ;;
+        --json) JSON_MODE=1 ;;
+        --version) echo "dbbkp v$VERSION"; exit 0 ;;
         *) print_err "Unknown parameter passed: $1"; exit 1 ;;
     esac
     shift
@@ -657,11 +783,11 @@ if [ "$HEADLESS" -eq 1 ]; then
 fi
 
 # Main Menu (Interactive)
-log_to_file "===== STARTED INTERACTIVE SESSION ====="
 while true; do
-    echo "=================================================="
-    echo "      DB Backup & Restore Manager                 "
-    echo "=================================================="
+    echo ""
+    echo "======================================="
+    echo "        DBBKP v$VERSION"
+    echo "======================================="
     PS3="Please select a module: "
     options=("MySQL Backup" "MySQL Restore" "PostgreSQL Backup" "PostgreSQL Full Restore" "PostgreSQL Data Restore" "Upload File (Transfer)" "Download File" "Update Agent (GitHub)" "Exit")
     select opt in "${options[@]}"; do
