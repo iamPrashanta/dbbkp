@@ -551,6 +551,16 @@ file_download() {
         read -e -p "Enter remote source (e.g. root@192.168.1.1:/path/file.log): " T_SRC
         read -e -p "Enter local destination (default: ./): " T_DEST
         T_DEST=${T_DEST:-./}
+
+        if [ -z "$T_SRC" ]; then
+            print_err "Source cannot be empty."
+            return 1
+        fi
+
+        if [ ! -d "$T_DEST" ]; then
+            print_err "Destination directory does not exist: $T_DEST"
+            return 1
+        fi
         
         echo "Select Download Method:"
         select t_method in "scp" "rsync" "AWS S3" "rclone (GDrive/Other)"; do
