@@ -27,7 +27,7 @@ To download the latest script globally onto your server:
 
 ```bash
 # 1. Download straight to your bin directory
-sudo curl -L https://github.com/iamPrashanta/dbbkp/main/dbbkp.sh -o /usr/local/bin/dbbkp
+sudo curl -L https://raw.githubusercontent.com/iamPrashanta/dbbkp/main/dbbkp.sh -o /usr/local/bin/dbbkp
 
 # 2. Make it executable
 sudo chmod +x /usr/local/bin/dbbkp
