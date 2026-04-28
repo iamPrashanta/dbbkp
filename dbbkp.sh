@@ -549,7 +549,8 @@ file_download() {
         SSH_PORT=${HEADLESS_PORT:-22}
     else
         read -e -p "Enter remote source (e.g. root@192.168.1.1:/path/file.log): " T_SRC
-        read -e -p "Enter local destination (e.g. ./ or /mnt/c/Downloads/): " T_DEST
+        read -e -p "Enter local destination (default: ./): " T_DEST
+        T_DEST=${T_DEST:-./}
         
         echo "Select Download Method:"
         select t_method in "scp" "rsync" "AWS S3" "rclone (GDrive/Other)"; do
