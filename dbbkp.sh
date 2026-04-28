@@ -117,7 +117,7 @@ send_notification() {
         echo ""
         read -p "Do you want to send a Webhook notification (Slack/Discord) for this operation? (y/n) " SEND_NOTIF
         if [[ "$SEND_NOTIF" =~ ^[Yy]$ ]]; then
-            read -p "Enter Webhook URL: " url
+            read -e -p "Enter Webhook URL: " url
             ENV_WEBHOOK_URL="$url"
         else
             return
@@ -168,14 +168,14 @@ prompt_db_details() {
         echo ""
     fi
 
-    read -p "Database Host (default: ${ENV_DB_HOST:-localhost}): " DB_HOST
+    read -e -p "Database Host (default: ${ENV_DB_HOST:-localhost}): " DB_HOST
     DB_HOST=${DB_HOST:-${ENV_DB_HOST:-localhost}}
-    read -p "Database Username (default: ${ENV_DB_USER}): " DB_USER
+    read -e -p "Database Username (default: ${ENV_DB_USER}): " DB_USER
     DB_USER=${DB_USER:-$ENV_DB_USER}
     read -s -p "Database Password (default: from .env if set): " DB_PASS
     DB_PASS=${DB_PASS:-$ENV_DB_PASS}
     echo ""
-    read -p "Database Name (default: ${ENV_DB_NAME}): " DB_NAME
+    read -e -p "Database Name (default: ${ENV_DB_NAME}): " DB_NAME
     DB_NAME=${DB_NAME:-$ENV_DB_NAME}
 }
 
@@ -191,7 +191,7 @@ prompt_filename() {
     select choice in "Auto-generate" "Manual input"; do
         case $choice in
             "Auto-generate" ) eval $var_to_set="'$default_name'"; break;;
-            "Manual input" ) read -p "Enter filename: " user_filename; eval $var_to_set="'$user_filename'"; break;;
+            "Manual input" ) read -e -p "Enter filename: " user_filename; eval $var_to_set="'$user_filename'"; break;;
         esac
     done
 }
@@ -305,7 +305,7 @@ mysql_restore() {
     if [ "$HEADLESS" -eq 1 ]; then
         BACKUP_FILE=$HEADLESS_FILE
     else
-        read -p "Enter backup file path (.sql.gz): " BACKUP_FILE
+        read -e -p "Enter backup file path (.sql.gz): " BACKUP_FILE
     fi
     if [ ! -f "$BACKUP_FILE" ]; then
         print_err "File $BACKUP_FILE not found!"
@@ -367,8 +367,8 @@ pgsql_full_restore() {
         SCHEMA_FILE=$HEADLESS_SCHEMA
         DATA_FILE=$HEADLESS_FILE
     else
-        read -p "Enter schema backup file: " SCHEMA_FILE
-        read -p "Enter data backup file (.sql): " DATA_FILE
+        read -e -p "Enter schema backup file: " SCHEMA_FILE
+        read -e -p "Enter data backup file (.sql): " DATA_FILE
     fi
     
     export PGPASSWORD="$DB_PASS"
@@ -409,7 +409,7 @@ pgsql_data_restore() {
     if [ "$HEADLESS" -eq 1 ]; then
         DATA_FILE=$HEADLESS_FILE
     else
-        read -p "Enter data backup file (.sql): " DATA_FILE
+        read -e -p "Enter data backup file (.sql): " DATA_FILE
     fi
     
     export PGPASSWORD="$DB_PASS"
@@ -492,17 +492,17 @@ file_transfer() {
         t_method=$HEADLESS_METHOD
         SSH_PORT=${HEADLESS_PORT:-22}
     else
-        read -p "Enter file to transfer/upload: " T_FILE
+        read -e -p "Enter file to transfer/upload: " T_FILE
         echo "Select Transfer Method:"
         select t_method in "scp" "rsync" "AWS S3" "rclone (GDrive/Other)"; do
             case $t_method in
                 "scp" | "rsync" )
-                    read -p "Enter destination (e.g. root@192.168.1.1:/path/): " T_DEST
-                    read -p "SSH Port (default: 22): " SSH_PORT
+                    read -e -p "Enter destination (e.g. root@192.168.1.1:/path/): " T_DEST
+                    read -e -p "SSH Port (default: 22): " SSH_PORT
                     SSH_PORT=${SSH_PORT:-22}
                     break;;
                 "AWS S3" )
-                    read -p "Enter S3 Bucket (default: ${ENV_AWS_BUCKET}): " T_DEST
+                    read -e -p "Enter S3 Bucket (default: ${ENV_AWS_BUCKET}): " T_DEST
                     T_DEST=${T_DEST:-$ENV_AWS_BUCKET}
                     if [ -n "$ENV_AWS_ACCESS_KEY_ID" ]; then
                         export AWS_ACCESS_KEY_ID="$ENV_AWS_ACCESS_KEY_ID"
@@ -510,7 +510,7 @@ file_transfer() {
                     fi
                     break;;
                 "rclone (GDrive/Other)" )
-                    read -p "Enter rclone remote path (default: ${ENV_RCLONE_REMOTE}): " T_DEST
+                    read -e -p "Enter rclone remote path (default: ${ENV_RCLONE_REMOTE}): " T_DEST
                     T_DEST=${T_DEST:-$ENV_RCLONE_REMOTE}
                     break;;
             esac
@@ -548,14 +548,14 @@ file_download() {
         t_method=$HEADLESS_METHOD
         SSH_PORT=${HEADLESS_PORT:-22}
     else
-        read -p "Enter remote source (e.g. root@192.168.1.1:/path/file.log): " T_SRC
-        read -p "Enter local destination (e.g. ./ or /mnt/c/Downloads/): " T_DEST
+        read -e -p "Enter remote source (e.g. root@192.168.1.1:/path/file.log): " T_SRC
+        read -e -p "Enter local destination (e.g. ./ or /mnt/c/Downloads/): " T_DEST
         
         echo "Select Download Method:"
         select t_method in "scp" "rsync" "AWS S3" "rclone (GDrive/Other)"; do
             case $t_method in
                 "scp" | "rsync" )
-                    read -p "SSH Port (default: 22): " SSH_PORT
+                    read -e -p "SSH Port (default: 22): " SSH_PORT
                     SSH_PORT=${SSH_PORT:-22}
                     break;;
                 "AWS S3" )
