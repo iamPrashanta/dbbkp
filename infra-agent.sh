@@ -383,6 +383,20 @@ run_all() {
     check_logs
     detect_php_fpm_memory
 
+    # NEW
+    scan_malware
+    scan_permissions_risk
+    scan_exposed_backups
+
+    detect_attackers
+    detect_suspicious_requests
+
+    check_cpu
+    check_memory
+    check_disk_threshold
+
+    auto_suggestions
+
     export_stack
 }
 
