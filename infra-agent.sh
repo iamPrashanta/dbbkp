@@ -415,23 +415,29 @@ test_wildcard_routing() {
 
 check_disk_usage() {
     step "Disk Usage"
-    SYS_DISK_JSON="["
+    rm -f /tmp/sys_disk.json
     local first=1
-    
-    df -h | grep -v "loop\|tmpfs\|udev\|overlay\|boot" | awk 'NR>1 {print $6 " " $5}' | while read mount usage; do
-        usage_num=$(echo "$usage" | tr -d '%')
-        local escaped_mount=$(json_escape "$mount")
-        local entry="{\"mount\": $escaped_mount, \"usage_percent\": $usage_num}"
-        
-        if [ "$first" -eq 1 ]; then
-            echo "$entry" > /tmp/sys_disk.json
-            first=0
-        else
-            echo ", $entry" >> /tmp/sys_disk.json
-        fi
-        info "Mount: $mount | Usage: $usage"
-    done || true
-    
+
+    # Only emit rows where column 5 is a valid percentage (e.g. "47%")
+    # Skips malformed WSL/Windows drive rows where df columns shift
+    df -h | grep -v "loop\|tmpfs\|udev\|overlay\|boot" \
+        | awk 'NR>1 && $5 ~ /^[0-9]+%$/ {print $6 " " $5}' \
+        | while read mount usage; do
+            usage_num=$(echo "$usage" | tr -d '%')
+            case "$usage_num" in
+                ''|*[!0-9]*) continue ;;
+            esac
+            local escaped_mount=$(json_escape "$mount")
+            local entry="{\"mount\": $escaped_mount, \"usage_percent\": $usage_num}"
+            if [ "$first" -eq 1 ]; then
+                echo "$entry" > /tmp/sys_disk.json
+                first=0
+            else
+                echo ", $entry" >> /tmp/sys_disk.json
+            fi
+            info "Mount: $mount | Usage: $usage"
+        done || true
+
     if [ -f /tmp/sys_disk.json ]; then
         SYS_DISK_JSON="[$(cat /tmp/sys_disk.json)]"
         rm -f /tmp/sys_disk.json
