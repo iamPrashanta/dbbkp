@@ -1,12 +1,13 @@
 #!/bin/bash
 
-set -euo pipefail
+set -uo pipefail
 
 VERSION="3.0.0"
 SCAN_PATHS=("/home" "/var/www")
 JSON_MODE=0
 AUTO_FIX=0
 WEBHOOK_URL=""
+RUN_MODE="full"
 
 # Node identity & Redis configs
 NODE_ID=$(hostname 2>/dev/null || echo "unknown")
@@ -54,9 +55,10 @@ while [[ "$#" -gt 0 ]]; do
         --json) JSON_MODE=1 ;;
         --webhook=*) WEBHOOK_URL="${1#*=}" ;;
         --webhook) WEBHOOK_URL="$2"; shift ;;
+        --mode=*) RUN_MODE="${1#*=}" ;;
         --update) self_update; exit 0 ;;
         scan|version) COMMAND="$1" ;;
-        *) echo "Usage: $0 [scan|version|--update] [--auto-fix] [--json] [--webhook URL]"; exit 1 ;;
+        *) echo "Usage: $0 [scan|version|--update] [--auto-fix] [--json] [--mode=health|disk|network|full] [--webhook URL]"; exit 1 ;;
     esac
     shift
 done
@@ -831,6 +833,45 @@ run_all() {
     check_dependencies
     heartbeat
     
+    if [ "$RUN_MODE" == "health" ]; then
+        check_cpu
+        check_memory
+        if [ "$JSON_MODE" -eq 1 ]; then
+            cat <<EOF
+{
+  "cpu_usage_percent": ${SYS_CPU_USAGE:-0},
+  "memory_usage_percent": ${SYS_MEM_USAGE:-0},
+  "uptime_sec": ${SYS_UPTIME:-0}
+}
+EOF
+        fi
+        exit 0
+    elif [ "$RUN_MODE" == "disk" ]; then
+        check_disk_usage
+        if [ "$JSON_MODE" -eq 1 ]; then
+            cat <<EOF
+{
+  "disk": ${SYS_DISK_JSON:-[]}
+}
+EOF
+        fi
+        exit 0
+    elif [ "$RUN_MODE" == "network" ]; then
+        # Just to ensure we don't crash if we output nothing
+        # We don't have a specific global JSON block for network checks right now, 
+        # but we can return basic ok status for the API.
+        detect_dns_cloudflare
+        test_wildcard_routing
+        if [ "$JSON_MODE" -eq 1 ]; then
+            cat <<EOF
+{
+  "status": "network_checks_completed"
+}
+EOF
+        fi
+        exit 0
+    fi
+
     detect_web_server
     detect_php
     detect_mysql
