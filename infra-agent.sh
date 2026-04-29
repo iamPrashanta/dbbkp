@@ -823,6 +823,140 @@ INNER_EOF
 }
 
 
+
+# -------------------------------
+# SECURITY SCAN
+# -------------------------------
+
+scan_malware() {
+    step "Malware Scan"
+
+    FOUND=$(grep -R "eval(base64_decode" "$ROOT_PATH" 2>/dev/null | wc -l)
+
+    if [ "$FOUND" -gt 0 ]; then
+        err "Possible malware detected ($FOUND matches)"
+        grep -R "eval(base64_decode" "$ROOT_PATH" 2>/dev/null | head -n 5 | while read line; do
+            warn "$line"
+        done
+    else
+        ok "No base64 malware patterns"
+    fi
+
+    grep -R "gsyndication\|yandex\|yametric" "$ROOT_PATH" 2>/dev/null && warn "Suspicious external scripts found"
+}
+
+scan_permissions_risk() {
+    step "Permission Risk Scan"
+
+    BAD=$(find "$ROOT_PATH" -type d -perm -777 2>/dev/null | wc -l)
+
+    if [ "$BAD" -gt 0 ]; then
+        err "$BAD directories with 777 permission"
+    else
+        ok "No 777 permissions"
+    fi
+}
+
+scan_exposed_backups() {
+    step "Exposed Backups"
+
+    find "$ROOT_PATH" -type f \( -name "*.sql" -o -name "*.zip" -o -name "*.gz" \) | while read f; do
+        warn "Exposed backup: $f"
+    done
+}
+
+# -------------------------------
+# ATTACK ANALYSIS
+# -------------------------------
+
+detect_attackers() {
+    step "Top Attackers"
+
+    LOG="/usr/local/lsws/logs/access.log"
+
+    if [ -f "$LOG" ]; then
+        awk '{print $1}' "$LOG" | sort | uniq -c | sort -nr | head -n 5 | while read line; do
+            warn "$line"
+        done
+    else
+        warn "No access log found"
+    fi
+}
+
+detect_suspicious_requests() {
+    step "Suspicious Requests"
+
+    LOG="/usr/local/lsws/logs/access.log"
+
+    grep -E "phpunit|_ignition|eval|base64|shell|\.env" "$LOG" 2>/dev/null | head -n 5 | while read line; do
+        warn "$line"
+    done
+}
+
+# -------------------------------
+# PERFORMANCE
+# -------------------------------
+
+check_cpu() {
+    step "CPU Usage"
+
+    CPU=$(top -bn1 | grep "Cpu(s)" | awk '{print $2 + $4}')
+
+    if (( $(echo "$CPU > 80" | bc -l) )); then
+        err "High CPU usage: $CPU%"
+    else
+        ok "CPU OK: $CPU%"
+    fi
+}
+
+check_memory() {
+    step "Memory Usage"
+
+    MEM=$(free | awk '/Mem/ {printf("%.2f"), $3/$2 * 100}')
+
+    if (( $(echo "$MEM > 80" | bc -l) )); then
+        err "High memory usage: $MEM%"
+    else
+        ok "Memory OK: $MEM%"
+    fi
+}
+
+check_disk_threshold() {
+    step "Disk Threshold"
+
+    df -h | awk 'NR>1 {print $5 " " $6}' | while read line; do
+        USAGE=$(echo $line | awk '{print $1}' | tr -d '%')
+
+        if [ "$USAGE" -gt 85 ]; then
+            err "Disk critical: $line"
+        fi
+    done
+}
+
+# -------------------------------
+# SMART DIAGNOSTICS
+# -------------------------------
+
+auto_suggestions() {
+    step "Smart Suggestions"
+
+    if grep -R "eval(base64_decode" "$ROOT_PATH" >/dev/null 2>&1; then
+        warn "👉 Suggestion: Possible malware — clean files immediately"
+    fi
+
+    if find "$ROOT_PATH" -type d -perm -777 | grep . >/dev/null 2>&1; then
+        warn "👉 Suggestion: Fix permissions (chmod 755)"
+    fi
+
+    if ! crontab -l 2>/dev/null | grep artisan >/dev/null; then
+        warn "👉 Suggestion: Setup Laravel scheduler"
+    fi
+
+    if ! systemctl is-active --quiet nginx && ! systemctl is-active --quiet apache2; then
+        warn "👉 Suggestion: Web server not running properly"
+    fi
+}
+
 # -------------------------------
 # RUN ALL
 # -------------------------------
@@ -859,6 +993,20 @@ run_all() {
 
     discover_apps
     risk_score
+
+    # NEW
+    scan_malware
+    scan_permissions_risk
+    scan_exposed_backups
+
+    detect_attackers
+    detect_suspicious_requests
+
+    check_cpu
+    check_memory
+    check_disk_threshold
+
+    auto_suggestions
 
     export_stack
     
