@@ -471,21 +471,215 @@ detect_cron() {
 }
 
 detect_suspicious_crons() {
+
     step "Suspicious Cron Jobs"
 
-    CRON_SCORE=0
+    rm -f /tmp/suspicious_crons.json
 
-    CRON_CONTENT=$(
-        crontab -l 2>/dev/null
-        cat /etc/crontab 2>/dev/null
-        ls /etc/cron.d 2>/dev/null | xargs -I{} cat /etc/cron.d/{} 2>/dev/null
-    )
+    local first=1
+    local TOTAL_CRON_THREATS=0
 
-    echo "$CRON_CONTENT" | grep -Ei \
-    "curl|wget|base64|bash|nc |python .*http|php .*tmp|sh " | while read line; do
-        warn "Suspicious cron: $line"
-        CRON_SCORE=$((CRON_SCORE+20))
+    scan_cron_content() {
+
+        local content="$1"
+        local owner="$2"
+        local source="$3"
+
+        echo "$content" | grep -Ev '^\s*#|^\s*$' | while read -r line; do
+
+            local SCORE=0
+            local REASONS=()
+
+            echo "$line" | grep -Eiq "curl .*\\|.*bash" && {
+                SCORE=$((SCORE+50))
+                REASONS+=("curl|bash")
+            }
+
+            echo "$line" | grep -Eiq "wget .*\\|.*sh" && {
+                SCORE=$((SCORE+50))
+                REASONS+=("wget|sh")
+            }
+
+            echo "$line" | grep -Eiq "base64" && {
+                SCORE=$((SCORE+40))
+                REASONS+=("base64")
+            }
+
+            echo "$line" | grep -Eiq "/tmp/" && {
+                SCORE=$((SCORE+30))
+                REASONS+=("/tmp")
+            }
+
+            echo "$line" | grep -Eiq "nc |netcat|socat" && {
+                SCORE=$((SCORE+50))
+                REASONS+=("reverse-shell")
+            }
+
+            echo "$line" | grep -Eiq "python .*http" && {
+                SCORE=$((SCORE+30))
+                REASONS+=("python-http")
+            }
+
+            echo "$line" | grep -Eiq "bash -c|sh -c" && {
+                SCORE=$((SCORE+25))
+                REASONS+=("shell-exec")
+            }
+
+            echo "$line" | grep -Eiq "xmrig|minerd|kinsing" && {
+                SCORE=$((SCORE+80))
+                REASONS+=("crypto-miner")
+            }
+
+            echo "$line" | grep -Eiq "php .*tmp" && {
+                SCORE=$((SCORE+40))
+                REASONS+=("php-tmp")
+            }
+
+            echo "$line" | grep -Eiq "curl .*http|wget .*http" && {
+                SCORE=$((SCORE+25))
+                REASONS+=("remote-download")
+            }
+
+            if echo "$line" | grep -q "artisan schedule:run"; then
+
+                APP_PATH=$(echo "$line" | grep -oP '/home/[^ ]+' | head -1 | sed 's|/artisan||')
+
+                if [ -n "$APP_PATH" ]; then
+
+                    for sched in \
+                        "$APP_PATH/app/Console/Kernel.php" \
+                        "$APP_PATH/routes/console.php"
+                    do
+
+                        [ -f "$sched" ] || continue
+
+                        MATCHES=$(grep -Eni \
+                        "shell_exec|exec\(|system\(|passthru|proc_open|popen|base64_decode|eval\(" \
+                        "$sched" 2>/dev/null || true)
+
+                        if [ -n "$MATCHES" ]; then
+                            SCORE=$((SCORE+80))
+                            REASONS+=("laravel-scheduler-shell")
+
+                            warn "Dangerous Laravel scheduler detected"
+                            echo "$MATCHES"
+                        fi
+                    done
+                fi
+            fi
+
+            if [ "$SCORE" -gt 20 ]; then
+
+                TOTAL_CRON_THREATS=$((TOTAL_CRON_THREATS+1))
+
+                warn "Suspicious cron detected ($owner)"
+
+                echo "--------------------------------------------"
+                echo "User    : $owner"
+                echo "Source  : $source"
+                echo "Score   : $SCORE"
+                echo "Reasons : ${REASONS[*]}"
+                echo "Command : $line"
+                echo "--------------------------------------------"
+
+                local escaped_owner=$(json_escape "$owner")
+                local escaped_source=$(json_escape "$source")
+                local escaped_line=$(json_escape "$line")
+
+                local entry=$(cat <<EOF
+{
+  "user": $escaped_owner,
+  "source": $escaped_source,
+  "score": $SCORE,
+  "reasons": $(json_escape "${REASONS[*]}"),
+  "command": $escaped_line
+}
+EOF
+)
+
+                if [ "$first" -eq 1 ]; then
+                    echo "$entry" > /tmp/suspicious_crons.json
+                    first=0
+                else
+                    echo ", $entry" >> /tmp/suspicious_crons.json
+                fi
+            fi
+        done
+    }
+
+    #
+    # /etc/crontab
+    #
+
+    [ -f /etc/crontab ] && \
+    scan_cron_content \
+    "$(cat /etc/crontab 2>/dev/null)" \
+    "root" \
+    "/etc/crontab"
+
+    #
+    # /etc/cron.d/*
+    #
+
+    for f in /etc/cron.d/*; do
+
+        [ -f "$f" ] || continue
+
+        scan_cron_content \
+        "$(cat "$f" 2>/dev/null)" \
+        "system" \
+        "$f"
     done
+
+    #
+    # REAL HOSTING USERS
+    #
+
+    awk -F: '
+    $3 >= 1000 &&
+    $7 !~ /(nologin|false)/ {
+        print $1
+    }' /etc/passwd | while read -r user; do
+
+        USER_CRON=$(crontab -u "$user" -l 2>/dev/null || true)
+
+        [ -z "$USER_CRON" ] && continue
+
+        info "Checking cron for user: $user"
+
+        scan_cron_content \
+        "$USER_CRON" \
+        "$user" \
+        "crontab -u $user"
+    done
+
+    #
+    # ROOT CRON
+    #
+
+    ROOT_CRON=$(crontab -u root -l 2>/dev/null || true)
+
+    [ -n "$ROOT_CRON" ] && \
+    scan_cron_content \
+    "$ROOT_CRON" \
+    "root" \
+    "crontab -u root"
+
+    #
+    # Final JSON
+    #
+
+    if [ -f /tmp/suspicious_crons.json ]; then
+        SUSPICIOUS_CRONS_JSON="[$(cat /tmp/suspicious_crons.json)]"
+    else
+        SUSPICIOUS_CRONS_JSON="[]"
+    fi
+
+    if [ "$TOTAL_CRON_THREATS" -eq 0 ]; then
+        ok "No suspicious cron jobs detected"
+    else
+        warn "$TOTAL_CRON_THREATS suspicious cron jobs detected"
+    fi
 }
 
 detect_queue() {
@@ -519,21 +713,52 @@ detect_ssl() {
 }
 
 detect_seo_hijack() {
+
     step "SEO Spam Detection"
 
     rm -f /tmp/seo_spam.json
 
     local first=1
 
+    SEO_PATTERN='
+viagra|
+cialis|
+casino|
+porn|
+loan|
+crypto|
+bitcoin|
+สล็อต|
+บาคาร่า|
+japanese|
+seo spam|
+cheap pills|
+online casino|
+href=.*casino|
+display:none|
+base64_decode|
+gzinflate|
+iframe|
+eval\(
+'
+
     for p in "${SCAN_PATHS[@]}"; do
+
         [ -d "$p" ] || continue
 
-        find "$p" -type f \( -name "*.php" -o -name "*.html" \) 2>/dev/null | \
-        xargs grep -Ei \
-        "viagra|cialis|casino|crypto|japanese|สล็อต|porn|seo spam" 2>/dev/null | \
-        head -n 20 | while read line; do
+        find "$p" \
+            -type f \
+            \( -name "*.php" -o -name "*.html" -o -name "*.js" \) \
+            ! -path "*/vendor/*" \
+            ! -path "*/node_modules/*" \
+            2>/dev/null | \
 
-            warn "SEO spam match: $line"
+        xargs grep -Ein "$SEO_PATTERN" 2>/dev/null | \
+        head -n 50 | while read -r line; do
+
+            warn "SEO spam detected"
+
+            echo "$line"
 
             local escaped=$(json_escape "$line")
 
@@ -904,22 +1129,119 @@ classify_app() {
 }
 
 risk_score() {
-    step "Risk Score"
-    SCORE=0
-    
-    [ "$MALWARE_FOUND" -eq 1 ] && SCORE=$((SCORE+50))
-    [ "$BAD_PERMS" -gt 0 ] && SCORE=$((SCORE+20))
-    [ "$BACKUPS_EXPOSED" -gt 0 ] && SCORE=$((SCORE+20))
-    [ "$SUSPICIOUS_REQUESTS" -gt 0 ] && SCORE=$((SCORE+15))
 
-    if [ "$SCORE" -gt 50 ]; then
+    step "Risk Score"
+
+    SCORE=0
+
+    #
+    # Malware
+    #
+
+    [ "${MALWARE_FOUND:-0}" -eq 1 ] && \
+    SCORE=$((SCORE + 50))
+
+    #
+    # Dangerous permissions
+    #
+
+    [ "${BAD_PERMS:-0}" -gt 0 ] && \
+    SCORE=$((SCORE + 20))
+
+    #
+    # Exposed backups
+    #
+
+    [ "${BACKUPS_EXPOSED:-0}" -gt 0 ] && \
+    SCORE=$((SCORE + 20))
+
+    #
+    # Suspicious HTTP requests
+    #
+
+    [ "${SUSPICIOUS_REQUESTS:-0}" -gt 0 ] && \
+    SCORE=$((SCORE + 15))
+
+    #
+    # Suspicious services
+    #
+
+    SVC_THREAT_COUNT=$(echo "${SUSPICIOUS_SERVICES_JSON:-[]}" \
+        | grep -o '"service"' \
+        | wc -l || echo 0)
+
+    if [ "$SVC_THREAT_COUNT" -gt 0 ]; then
+        SCORE=$((SCORE + (SVC_THREAT_COUNT * 10)))
+    fi
+
+    #
+    # Suspicious cron jobs
+    #
+
+    CRON_THREAT_COUNT=$(echo "${SUSPICIOUS_CRONS_JSON:-[]}" \
+        | grep -o '"score"' \
+        | wc -l || echo 0)
+
+    if [ "$CRON_THREAT_COUNT" -gt 0 ]; then
+        SCORE=$((SCORE + (CRON_THREAT_COUNT * 15)))
+    fi
+
+    #
+    # SEO spam
+    #
+
+    SEO_SPAM_COUNT=$(echo "${SEO_SPAM_JSON:-[]}" \
+        | grep -o 'php\|html\|js' \
+        | wc -l || echo 0)
+
+    if [ "$SEO_SPAM_COUNT" -gt 10 ]; then
+        SCORE=$((SCORE + 40))
+    elif [ "$SEO_SPAM_COUNT" -gt 0 ]; then
+        SCORE=$((SCORE + 25))
+    fi
+
+    #
+    # Clamp max score
+    #
+
+    if [ "$SCORE" -gt 100 ]; then
+        SCORE=100
+    fi
+
+    #
+    # Final severity
+    #
+
+    if [ "$SCORE" -ge 80 ]; then
+
+        err "CRITICAL RISK ($SCORE)"
+
+        emit_event "CRITICAL_RISK_DETECTED" "$SCORE"
+
+    elif [ "$SCORE" -ge 50 ]; then
+
         err "HIGH RISK ($SCORE)"
+
         emit_event "HIGH_RISK_DETECTED" "$SCORE"
-    elif [ "$SCORE" -gt 20 ]; then
+
+    elif [ "$SCORE" -ge 25 ]; then
+
         warn "MEDIUM RISK ($SCORE)"
+
     else
+
         ok "LOW RISK ($SCORE)"
     fi
+
+    #
+    # Console summary
+    #
+
+    info "Malware Count: ${MALWARE_COUNT:-0}"
+    info "Cron Threats: ${CRON_THREAT_COUNT:-0}"
+    info "Service Threats: ${SVC_THREAT_COUNT:-0}"
+    info "SEO Spam Matches: ${SEO_SPAM_COUNT:-0}"
+    info "Suspicious Requests: ${SUSPICIOUS_REQUESTS:-0}"
 }
 
 export_stack() {
@@ -1017,29 +1339,32 @@ generate_final_report() {
       "status": $(json_escape "$SRV_REDIS_STATUS")
     },
 
-    "suspicious": $SUSPICIOUS_SERVICES_JSON
+    "service_threats": $SUSPICIOUS_SERVICES_JSON,
+    "seo_spam": $SEO_SPAM_JSON
   },
 
   "security": {
-    "risk_score": ${SCORE:-0},
-    "risk_level": $(json_escape "$risk_level"),
-
-    "malware": {
-      "found": $malware_bool,
-      "count": ${MALWARE_COUNT:-0},
-      "samples": $MALWARE_SAMPLES_JSON
+      "risk_score": ${SCORE:-0},
+      "risk_level": $(json_escape "$risk_level"),
+    
+      "cron_threats": $SUSPICIOUS_CRONS_JSON,
+    
+      "malware": {
+        "found": $malware_bool,
+        "count": ${MALWARE_COUNT:-0},
+        "samples": $MALWARE_SAMPLES_JSON
+      },
+    
+      "seo_hijack": {
+        "matches": $SEO_SPAM_JSON
+      },
+    
+      "permissions": {
+        "world_writable_dirs": ${BAD_PERMS:-0}
+      },
+    
+      "exposed_files": $EXPOSED_FILES_JSON
     },
-
-    "seo_hijack": {
-      "matches": $SEO_SPAM_JSON
-    },
-
-    "permissions": {
-      "world_writable_dirs": ${BAD_PERMS:-0}
-    },
-
-    "exposed_files": $EXPOSED_FILES_JSON
-  },
 
   "attacks": {
     "top_ips": $ATTACKS_TOP_IPS_JSON,
