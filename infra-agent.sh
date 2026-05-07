@@ -712,69 +712,86 @@ detect_ssl() {
     fi
 }
 
+
 detect_seo_hijack() {
 
     step "SEO Spam Detection"
 
-    rm -f /tmp/seo_spam.json
+    local TMP_FILE="/tmp/seo_spam.ndjson"
 
-    local first=1
+    rm -f "$TMP_FILE"
 
-    SEO_PATTERN='
-viagra|
-cialis|
-casino|
-porn|
-loan|
-crypto|
-bitcoin|
-สล็อต|
-บาคาร่า|
-japanese|
-seo spam|
-cheap pills|
-online casino|
-href=.*casino|
-display:none|
-base64_decode|
-gzinflate|
-iframe|
-eval\(
-'
+    SEO_SPAM_JSON="[]"
+
+    local SEO_PATTERN='(base64_decode\(|gzinflate\(|shell_exec\(|system\(|passthru\(|assert\()|(viagra|cialis|casino|porn|สล็อต|บาคาร่า)|(display[[:space:]]*:[[:space:]]*none.*href)|(document\.write\(unescape)|(atob\()'
+
+    local MATCH_COUNT=0
 
     for p in "${SCAN_PATHS[@]}"; do
 
         [ -d "$p" ] || continue
 
-        find "$p" \
-            -type f \
-            \( -name "*.php" -o -name "*.html" -o -name "*.js" \) \
-            ! -path "*/vendor/*" \
-            ! -path "*/node_modules/*" \
-            2>/dev/null | \
+        info "Scanning path: $p"
 
-        xargs grep -Ein "$SEO_PATTERN" 2>/dev/null | \
-        head -n 50 | while read -r line; do
+        while IFS= read -r -d '' file; do
 
-            warn "SEO spam detected"
+            while IFS= read -r match_line; do
 
-            echo "$line"
+                MATCH_COUNT=$((MATCH_COUNT + 1))
 
-            local escaped=$(json_escape "$line")
+                warn "SEO spam indicator found"
 
-            if [ "$first" -eq 1 ]; then
-                echo "$escaped" > /tmp/seo_spam.json
-                first=0
-            else
-                echo ", $escaped" >> /tmp/seo_spam.json
-            fi
-        done
+                echo "$match_line"
+
+                FILE_PATH=$(echo "$match_line" | cut -d: -f1)
+                LINE_NO=$(echo "$match_line" | cut -d: -f2)
+                CONTENT=$(echo "$match_line" | cut -d: -f3- | head -c 300)
+
+                cat >> "$TMP_FILE" <<EOF
+{
+  "file": $(json_escape "$FILE_PATH"),
+  "line": $LINE_NO,
+  "content": $(json_escape "$CONTENT")
+}
+EOF
+
+                if [ "$MATCH_COUNT" -ge 50 ]; then
+                    warn "SEO spam match limit reached (50)"
+                    break 2
+                fi
+
+            done < <(
+                grep -Ein "$SEO_PATTERN" "$file" 2>/dev/null || true
+            )
+
+        done < <(
+            find "$p" \
+                -type f \
+                \( -name "*.php" -o -name "*.html" -o -name "*.js" \) \
+                ! -path "*/vendor/*" \
+                ! -path "*/node_modules/*" \
+                ! -path "*/storage/*" \
+                ! -path "*/public/build/*" \
+                ! -path "*/bootstrap/cache/*" \
+                -print0 2>/dev/null
+        )
+
     done
 
-    if [ -f /tmp/seo_spam.json ]; then
-        SEO_SPAM_JSON="[$(cat /tmp/seo_spam.json)]"
+    if [ -s "$TMP_FILE" ]; then
+
+        SEO_SPAM_JSON="[$(
+            paste -sd, "$TMP_FILE"
+        )]"
+
+        warn "$MATCH_COUNT SEO spam indicators detected"
+
     else
+
         SEO_SPAM_JSON="[]"
+
+        ok "No SEO spam indicators found"
+
     fi
 }
 
