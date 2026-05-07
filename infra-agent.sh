@@ -1168,7 +1168,7 @@ risk_score() {
 
     SVC_THREAT_COUNT=$(echo "${SUSPICIOUS_SERVICES_JSON:-[]}" \
         | grep -o '"service"' \
-        | wc -l || echo 0)
+        | awk 'END{print NR+0}')
 
     if [ "$SVC_THREAT_COUNT" -gt 0 ]; then
         SCORE=$((SCORE + (SVC_THREAT_COUNT * 10)))
@@ -1180,7 +1180,7 @@ risk_score() {
 
     CRON_THREAT_COUNT=$(echo "${SUSPICIOUS_CRONS_JSON:-[]}" \
         | grep -o '"score"' \
-        | wc -l || echo 0)
+        | awk 'END{print NR+0}')
 
     if [ "$CRON_THREAT_COUNT" -gt 0 ]; then
         SCORE=$((SCORE + (CRON_THREAT_COUNT * 15)))
@@ -1192,7 +1192,7 @@ risk_score() {
 
     SEO_SPAM_COUNT=$(echo "${SEO_SPAM_JSON:-[]}" \
         | grep -o 'php\|html\|js' \
-        | wc -l || echo 0)
+        | awk 'END{print NR+0}')
 
     if [ "$SEO_SPAM_COUNT" -gt 10 ]; then
         SCORE=$((SCORE + 40))
@@ -1394,8 +1394,8 @@ INNER_EOF
             info "Risk Level: $risk_level"
             info "Risk Score: ${SCORE:-0}"
             info "Malware Found: ${MALWARE_FOUND:-0}"
-            info "SEO Spam Matches: $(echo "$SEO_SPAM_JSON" | grep -o '{' | wc -l || echo 0)"
-            info "Suspicious Services: $(echo "$SUSPICIOUS_SERVICES_JSON" | grep -o '{' | wc -l || echo 0)"
+            info "SEO Spam Matches: $(echo "$SEO_SPAM_JSON" | grep -o '{' | awk 'END{print NR+0}')"
+            info "Suspicious Services: $(echo "$SUSPICIOUS_SERVICES_JSON" | grep -o '{' | awk 'END{print NR+0}')"
             info "Suspicious Requests: ${SUSPICIOUS_REQUESTS:-0}"
             info "Bad Permissions: ${BAD_PERMS:-0}"
             info "Scan Duration: ${duration}s"
